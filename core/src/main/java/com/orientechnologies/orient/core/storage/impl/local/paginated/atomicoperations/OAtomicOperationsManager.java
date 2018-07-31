@@ -437,7 +437,7 @@ public class OAtomicOperationsManager implements OAtomicOperationsMangerMXBean {
           activeAtomicOperations.remove(operation.getOperationUnitId());
         }
 
-        writeAheadLog.writeTill(lsn);
+
       } catch (Error e) {
         storage.handleJVMError(e);
         throw e;
@@ -453,6 +453,7 @@ public class OAtomicOperationsManager implements OAtomicOperationsMangerMXBean {
       operation.decrementCounter();
     }
 
+    writeAheadLog.writeTill(lsn);
     return lsn;
   }
 
