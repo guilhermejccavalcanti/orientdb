@@ -436,6 +436,8 @@ public class OAtomicOperationsManager implements OAtomicOperationsMangerMXBean {
         if (trackAtomicOperations) {
           activeAtomicOperations.remove(operation.getOperationUnitId());
         }
+
+        writeAheadLog.writeTill(lsn);
       } catch (Error e) {
         storage.handleJVMError(e);
         throw e;

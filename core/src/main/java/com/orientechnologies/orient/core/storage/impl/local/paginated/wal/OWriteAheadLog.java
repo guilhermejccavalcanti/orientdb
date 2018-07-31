@@ -51,6 +51,8 @@ public interface OWriteAheadLog {
 
   OLogSequenceNumber begin();
 
+  void writeTill(OLogSequenceNumber lsn);
+
   OLogSequenceNumber begin(long segmentId) throws IOException;
 
   OLogSequenceNumber end();

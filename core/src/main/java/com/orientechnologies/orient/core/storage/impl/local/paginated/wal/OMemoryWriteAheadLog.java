@@ -149,6 +149,11 @@ public class OMemoryWriteAheadLog extends OAbstractWriteAheadLog {
   }
 
   @Override
+  public void writeTill(OLogSequenceNumber lsn) {
+    throw new UnsupportedOperationException("Operation not supported for in memory storage.");
+  }
+
+  @Override
   public boolean cutAllSegmentsSmallerThan(long segmentId) {
     return false;
   }

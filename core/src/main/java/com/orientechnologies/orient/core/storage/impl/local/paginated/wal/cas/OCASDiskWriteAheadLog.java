@@ -1,5 +1,6 @@
 package com.orientechnologies.orient.core.storage.impl.local.paginated.wal.cas;
 
+import com.orientechnologies.common.concur.lock.OInterruptedException;
 import com.orientechnologies.common.concur.lock.ScalableRWLock;
 import com.orientechnologies.common.directmemory.ODirectMemoryAllocator;
 import com.orientechnologies.common.directmemory.OPointer;
@@ -1100,6 +1101,25 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     }
 
     return recordLSN;
+  }
+
+  public void writeTill(OLogSequenceNumber lsn) {
+    WrittenUpTo written = writtenUpTo.get();
+
+    while (written.lsn.compareTo(lsn) < 0) {
+      try {
+        flushLatch.get().await(1, TimeUnit.MILLISECONDS);
+      } catch (InterruptedException e) {
+        throw OException.wrapException(new OInterruptedException("Waiting of WAL thread was interrupted"), e);
+      }
+
+      written = writtenUpTo.get();
+
+      if (flushLatch.get().getCount() == 0 && written.lsn.compareTo(lsn) < 0) {
+        doFlush(false);
+      }
+    }
+
   }
 
   public OLogSequenceNumber begin() {
