@@ -448,12 +448,12 @@ public class OAtomicOperationsManager implements OAtomicOperationsMangerMXBean {
         currentOperation.set(null);
       }
 
+      writeAheadLog.writeTill(lsn);
     } else {
       lsn = null;
       operation.decrementCounter();
     }
 
-    writeAheadLog.writeTill(lsn);
     return lsn;
   }
 
