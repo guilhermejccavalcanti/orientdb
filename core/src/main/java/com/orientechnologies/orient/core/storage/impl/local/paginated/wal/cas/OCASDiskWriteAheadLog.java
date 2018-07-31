@@ -1103,21 +1103,20 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   }
 
   public void writeTill(OLogSequenceNumber lsn) {
-    WrittenUpTo written = writtenUpTo.get();
-
     OLogSequenceNumber endLSN = end.get();
     if (endLSN.compareTo(lsn) < 0) {
       lsn = endLSN;
     }
 
-    commitExecutor.submit(new RecordsWriter(false, true));
+    WrittenUpTo written = writtenUpTo.get();
+    if (written.lsn.compareTo(lsn) < 0) {
+      commitExecutor.submit(new RecordsWriter(false, true));
+    }
 
     while (written.lsn.compareTo(lsn) < 0) {
       Thread.yield();
-
       written = writtenUpTo.get();
     }
-
   }
 
   public OLogSequenceNumber begin() {
