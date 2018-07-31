@@ -2140,12 +2140,12 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
             assert written == null || written.lsn.compareTo(lastLSN) < 0;
 
             if (written == null) {
-              writtenUpTo.lazySet(new WrittenUpTo(lastLSN, buffer.limit()));
+              writtenUpTo.set(new WrittenUpTo(lastLSN, buffer.limit()));
             } else {
               if (written.lsn.getSegment() == lastLSN.getSegment()) {
-                writtenUpTo.lazySet(new WrittenUpTo(lastLSN, written.position + buffer.limit()));
+                writtenUpTo.set(new WrittenUpTo(lastLSN, written.position + buffer.limit()));
               } else {
-                writtenUpTo.lazySet(new WrittenUpTo(lastLSN, buffer.limit()));
+                writtenUpTo.set(new WrittenUpTo(lastLSN, buffer.limit()));
               }
             }
           }
