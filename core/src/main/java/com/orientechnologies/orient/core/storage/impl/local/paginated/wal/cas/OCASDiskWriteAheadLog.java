@@ -82,8 +82,6 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   private final static XXHashFactory xxHashFactory = XXHashFactory.fastestInstance();
   private static final int           XX_SEED       = 0x9747b28c;
 
-  private static final int BUFFER_SIZE = 2 * 64 * 1024 * 1024;
-
   private static final int MASTER_RECORD_SIZE = 20;
   private static final int BATCH_READ_SIZE    = 320;
 
@@ -270,7 +268,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
     records.offer(startRecord);
 
-    writtenUpTo.set(new WrittenUpTo(new OLogSequenceNumber(currentSegment, 0), 0));
+    writtenUpTo.set(new WrittenUpTo(new OLogSequenceNumber(currentSegment, 0), 0, segmentId));
 
     log(new OEmptyWALRecord());
 
@@ -665,7 +663,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
             long chSize = Files.size(segmentPath);
             final WrittenUpTo written = this.writtenUpTo.get();
 
-            if (segment == written.lsn.getSegment()) {
+            if (segment == written.segmentId) {
               chSize = Math.min(chSize, written.position);
             }
 
@@ -1030,6 +1028,11 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     }
 
     long qsize = queueSize.addAndGet(writeableRecord.getDiskSize());
+
+    if (qsize >= 5 * pageSize && commitExecutor.getTaskCount() < 2) {
+      commitExecutor.submit(new RecordsWriter(false, false));
+    }
+
     if (qsize >= maxCacheSize) {
       threadsWaitingCount.increment();
       try {
@@ -1078,16 +1081,31 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
   public void writeTill(OLogSequenceNumber lsn) {
     OLogSequenceNumber endLSN = end.get();
+
     if (endLSN.compareTo(lsn) < 0) {
       lsn = endLSN;
     }
 
     WrittenUpTo written = writtenUpTo.get();
-    if (written.lsn.compareTo(lsn) < 0) {
-      commitExecutor.submit(new RecordsWriter(false, true));
+    if (written.lsn.compareTo(lsn) >= 0) {
+      return;
     }
 
     while (written.lsn.compareTo(lsn) < 0) {
+      final OWALRecord record = records.peek();
+
+      if (record != null) {
+        OLogSequenceNumber recordLSN = record.getLsn();
+
+        if (recordLSN.getPosition() == -1) {
+          calculateRecordsLSNs();
+        }
+
+        if (recordLSN.compareTo(lsn) <= 0 && commitExecutor.getTaskCount() < 2) {
+          commitExecutor.submit(new RecordsWriter(false, true));
+        }
+      }
+
       Thread.yield();
       written = writtenUpTo.get();
     }
@@ -1731,7 +1749,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
         final long qSize = queueSize.get();
 
         //even if queue is empty we need to write buffer content to the disk if needed
-        if (qSize >= maxCacheSize || qSize >= 10 * pageSize || fullWrite || makeFSync) {
+        if (qSize >= maxCacheSize || qSize >= 5 * pageSize || fullWrite || makeFSync) {
           final CountDownLatch fl = new CountDownLatch(1);
           flushLatch.lazySet(fl);
           try {
@@ -1763,7 +1781,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
                 if (segmentId != lsn.getSegment()) {
                   if (walFile != null) {
                     if (writeBufferPointer != null) {
-                      writeBuffer(walFile, writeBuffer, writeBufferPointer, lastLSN, checkPointLSN);
+                      writeBuffer(walFile, writeBuffer, writeBufferPointer, lastLSN, checkPointLSN, segmentId);
                     }
 
                     writeBufferPointer = null;
@@ -1802,7 +1820,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
                 while (written < bytesToWrite) {
                   if (writeBuffer == null || writeBuffer.remaining() == 0) {
                     if (writeBufferPointer != null) {
-                      writeBuffer(walFile, writeBuffer, writeBufferPointer, lastLSN, checkPointLSN);
+                      writeBuffer(walFile, writeBuffer, writeBufferPointer, lastLSN, checkPointLSN, segmentId);
                     }
 
                     writeBufferPointer = allocator.allocate(pageSize, blockSize);
@@ -1817,6 +1835,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
                   assert
                       written != 0 || currentPosition + writeBuffer.position() == lsn.getPosition() :
                       (currentPosition + writeBuffer.position()) + " vs " + lsn.getPosition();
+
                   final int chunkSize = Math.min(bytesToWrite - written, pageSize - writeBuffer.position());
                   assert chunkSize <= maxRecordSize;
                   assert chunkSize + writeBuffer.position() <= pageSize;
@@ -1869,7 +1888,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
             }
 
             if (writeBuffer != null) {
-              writeBuffer(walFile, writeBuffer, writeBufferPointer, lastLSN, checkPointLSN);
+              writeBuffer(walFile, writeBuffer, writeBufferPointer, lastLSN, checkPointLSN, segmentId);
             }
           } finally {
             fl.countDown();
@@ -1954,54 +1973,36 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
       }
     }
 
-    private void writeBuffer(final OWALFile file, final ByteBuffer buffer, final OPointer pointer, final OLogSequenceNumber lastLSN,
-        final OLogSequenceNumber checkpointLSN) throws IOException {
+    private void writeBuffer(final OWALFile file, final ByteBuffer buffer, final OPointer pointer, OLogSequenceNumber lastLSN,
+        final OLogSequenceNumber checkpointLSN, final long segmentId) throws IOException {
 
       if (buffer.position() <= OCASWALPage.RECORDS_OFFSET) {
         allocator.deallocate(pointer);
         return;
       }
 
-      int maxPage = (buffer.position() + pageSize - 1) / pageSize;
-      int lastPageSize = buffer.position() - (maxPage - 1) * pageSize;
+      final int bufferSize = buffer.position();
 
-      if (lastPageSize <= OCASWALPage.RECORDS_OFFSET) {
-        maxPage--;
-        lastPageSize = pageSize;
-      }
+      buffer.limit(bufferSize);
 
-      for (int start = 0, page = 0; start < maxPage * pageSize; start += pageSize, page++) {
-        final int pageSize;
-        if (page < maxPage - 1) {
-          pageSize = OCASDiskWriteAheadLog.this.pageSize;
-        } else {
-          pageSize = lastPageSize;
-        }
+      buffer.position(OCASWALPage.MAGIC_NUMBER_OFFSET);
+      buffer.putLong(OCASWALPage.MAGIC_NUMBER);
 
-        buffer.limit(start + pageSize);
+      buffer.position(OCASWALPage.PAGE_SIZE_OFFSET);
+      buffer.putShort((short) bufferSize);
 
-        buffer.position(start + OCASWALPage.MAGIC_NUMBER_OFFSET);
-        buffer.putLong(OCASWALPage.MAGIC_NUMBER);
+      buffer.position(OCASWALPage.RECORDS_OFFSET);
+      final XXHash64 xxHash64 = xxHashFactory.hash64();
+      final long hash = xxHash64.hash(buffer, XX_SEED);
 
-        buffer.position(start + OCASWALPage.PAGE_SIZE_OFFSET);
-        buffer.putShort((short) pageSize);
-
-        buffer.position(start + OCASWALPage.RECORDS_OFFSET);
-        final XXHash64 xxHash64 = xxHashFactory.hash64();
-        final long hash = xxHash64.hash(buffer, XX_SEED);
-
-        buffer.position(start + OCASWALPage.XX_OFFSET);
-        buffer.putLong(hash);
-      }
+      buffer.position(OCASWALPage.XX_OFFSET);
+      buffer.putLong(hash);
 
       buffer.position(0);
-      final int limit = maxPage * pageSize;
-      buffer.limit(limit);
+      buffer.limit(pageSize);
 
       assert file.position() == currentPosition;
       currentPosition += buffer.limit();
-
-      final long expectedPosition = currentPosition;
 
       try {
         long startTs = 0;
@@ -2011,7 +2012,6 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
         assert buffer.position() == 0;
         assert file.position() % pageSize == 0;
-        assert buffer.limit() == limit;
 
         while (buffer.remaining() > 0) {
           final int initialPos = buffer.position();
@@ -2019,23 +2019,32 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
           assert buffer.position() == initialPos + written;
         }
 
-        assert file.position() == expectedPosition;
+        assert file.position() == currentPosition;
 
-        if (lastLSN != null) {
-          final WrittenUpTo written = writtenUpTo.get();
+        WrittenUpTo written = writtenUpTo.get();
 
-          assert written == null || written.lsn.compareTo(lastLSN) < 0;
+        if (lastLSN == null) {
+          lastLSN = written.lsn;
+        }
 
-          if (written == null) {
-            writtenUpTo.set(new WrittenUpTo(lastLSN, buffer.limit()));
+        assert written == null || written.lsn.compareTo(lastLSN) <= 0;
+
+        if (written == null) {
+          written = new WrittenUpTo(lastLSN, buffer.limit(), segmentId);
+        } else {
+          if (written.segmentId == segmentId) {
+            written = new WrittenUpTo(lastLSN, written.position + buffer.limit(), segmentId);
           } else {
-            if (written.lsn.getSegment() == lastLSN.getSegment()) {
-              writtenUpTo.set(new WrittenUpTo(lastLSN, written.position + buffer.limit()));
-            } else {
-              writtenUpTo.set(new WrittenUpTo(lastLSN, buffer.limit()));
-            }
+            written = new WrittenUpTo(lastLSN, buffer.limit(), segmentId);
           }
         }
+
+        assert
+            file.position() == written.position :
+            "LSN " + lastLSN + " position " + written.position + " real position " + file.position() + " old position "
+                + writtenUpTo.get().position + " old LSN " + writtenUpTo.get().lsn;
+
+        writtenUpTo.set(written);
 
         if (checkpointLSN != null) {
           assert writtenCheckpoint == null || writtenCheckpoint.compareTo(checkpointLSN) < 0;
@@ -2050,10 +2059,14 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
           //noinspection NonAtomicOperationOnVolatileField
           bytesWrittenTime += (endTs - startTs);
         }
-      } catch (final IOException e) {
+      } catch (final IOException e)
+
+      {
         OLogManager.instance().errorNoDb(this, "Error during WAL data write", e);
         throw e;
-      } finally {
+      } finally
+
+      {
         allocator.deallocate(pointer);
       }
     }
@@ -2104,10 +2117,12 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   private static final class WrittenUpTo {
     private final OLogSequenceNumber lsn;
     private final long               position;
+    private final long               segmentId;
 
-    WrittenUpTo(final OLogSequenceNumber lsn, final long position) {
+    WrittenUpTo(final OLogSequenceNumber lsn, final long position, long segmentId) {
       this.lsn = lsn;
       this.position = position;
+      this.segmentId = segmentId;
     }
   }
 }
