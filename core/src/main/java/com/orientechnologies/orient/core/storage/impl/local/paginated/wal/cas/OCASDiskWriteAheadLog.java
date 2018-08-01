@@ -286,7 +286,8 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     this.recordsWriterFuture = commitExecutor
         .scheduleWithFixedDelay(new RecordsWriter(false), commitDelay, commitDelay, TimeUnit.MILLISECONDS);
 
-    fsyncFuture = this.fsyncExecutor.scheduleWithFixedDelay(new ForceSyncTask(), fsyncInterval, fsyncInterval, TimeUnit.DAYS);
+    fsyncFuture = this.fsyncExecutor
+        .scheduleWithFixedDelay(new ForceSyncTask(), fsyncInterval, fsyncInterval, TimeUnit.MILLISECONDS);
 
     flush();
   }
@@ -1516,15 +1517,15 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
       throw new IllegalStateException(e);
     }
 
-//    if (forceSync) {
-//      future = fsyncExecutor.submit(new ForceSyncTask());
-//      try {
-//        future.get();
-//      } catch (final Exception e) {
-//        OLogManager.instance().errorNoDb(this, "Exception during WAL flush", e);
-//        throw new IllegalStateException(e);
-//      }
-//    }
+    if (forceSync) {
+      future = fsyncExecutor.submit(new ForceSyncTask());
+      try {
+        future.get();
+      } catch (final Exception e) {
+        OLogManager.instance().errorNoDb(this, "Exception during WAL flush", e);
+        throw new IllegalStateException(e);
+      }
+    }
   }
 
   public OLogSequenceNumber getFlushedLsn() {
@@ -1860,8 +1861,6 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
       OLogSequenceNumber lastLSN = null;
       OLogSequenceNumber checkPointLSN = null;
 
-      boolean recordsWritten = false;
-
       try {
         final long ts = System.nanoTime();
         final long qSize = queueSize.get();
@@ -1910,11 +1909,8 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
                     assert walFile.position() == currentPosition;
 
-                    walFile.force(true);
-                    walFile.close();
-
-//                    fileCloseQueueSize.incrementAndGet();
-//                    fileCloseQueue.offer(new OPair<>(segmentId, walFile));
+                    fileCloseQueueSize.incrementAndGet();
+                    fileCloseQueue.offer(new OPair<>(segmentId, walFile));
                   }
 
                   segmentId = lsn.getSegment();
@@ -1997,7 +1993,6 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
                 }
 
                 lastLSN = lsn;
-                recordsWritten = true;
                 if (writeableRecord.isUpdateMasterRecord()) {
                   checkPointLSN = lastLSN;
                 }
@@ -2019,35 +2014,6 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
           if (qSize > 0 && ts - segmentAdditionTs >= segmentsInterval) {
             for (final OSegmentOverflowListener listener : segmentOverflowListeners) {
               listener.onSegmentOverflow(currentSegment);
-            }
-          }
-
-          if (recordsWritten) {
-            long startTs = 0;
-            if (printPerformanceStatistic) {
-              startTs = System.nanoTime();
-            }
-
-            walFile.force(true);
-
-            final OLogSequenceNumber checkPoint = writtenCheckpoint;
-            if (checkPoint != null) {
-              updateCheckpoint(checkPoint);
-            }
-
-            final WrittenUpTo written = writtenUpTo.get();
-            if (written != null) {
-              flushedLSN = written.lsn;
-            }
-
-            fireEventsFor(flushedLSN);
-
-            if (printPerformanceStatistic) {
-              final long endTs = System.nanoTime();
-              //noinspection NonAtomicOperationOnVolatileField
-              fsyncTime += (endTs - startTs);
-              //noinspection NonAtomicOperationOnVolatileField
-              fsyncCount++;
             }
           }
         }
