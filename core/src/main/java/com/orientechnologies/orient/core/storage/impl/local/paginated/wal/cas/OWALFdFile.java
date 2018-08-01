@@ -36,7 +36,7 @@ public class OWALFdFile implements OWALFile {
       final int written = (int) ONative.instance().write(fd, buffer, buffer.remaining());
       buffer.position(buffer.position() + written);
 
-      if (expectedInitialLen + written > 0 && ((expectedInitialLen + written) & (64 * 1024 * 1024 - 1)) == 0) {
+      if (expectedInitialLen + written > 0 && ((expectedInitialLen + written) & (128 * 1024 * 1024 - 1)) == 0) {
         ONative.instance().posix_fadvise(fd, 0, expectedInitialLen + written, ONative.POSIX_FADV_DONTNEED);
       }
       return written;
