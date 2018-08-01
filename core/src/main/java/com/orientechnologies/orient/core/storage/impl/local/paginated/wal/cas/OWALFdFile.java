@@ -26,7 +26,7 @@ public class OWALFdFile implements OWALFile {
   }
 
   @Override
-  public int write(ByteBuffer buffer) throws IOException {
+  public int write(ByteBuffer buffer, long expectedInitialLen) throws IOException {
     if (buffer.limit() % blockSize != 0) {
       throw new IOException(
           "In direct IO mode, size of the written buffers should be quantified by block size (block size : " + blockSize
@@ -35,6 +35,10 @@ public class OWALFdFile implements OWALFile {
     try {
       final int written = (int) ONative.instance().write(fd, buffer, buffer.remaining());
       buffer.position(buffer.position() + written);
+
+      if (expectedInitialLen > 0 && written > 0) {
+        ONative.instance().sys_fadvise64_64(fd, 0, expectedInitialLen + written, ONative.POSIX_FADV_DONTNEED);
+      }
       return written;
     } catch (LastErrorException e) {
       throw new IOException("Error during writing of data to file", e);

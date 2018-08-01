@@ -3,6 +3,7 @@ package com.orientechnologies.orient.core.storage.impl.local.paginated.wal.cas;
 import com.orientechnologies.common.jna.ONative;
 import com.orientechnologies.common.log.OLogManager;
 import com.sun.jna.LastErrorException;
+import com.sun.jna.Platform;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -14,7 +15,7 @@ import java.nio.file.StandardOpenOption;
 public interface OWALFile extends Closeable {
   void force(boolean forceMetadata) throws IOException;
 
-  int write(ByteBuffer buffer) throws IOException;
+  int write(ByteBuffer buffer, long expectedInitialLen) throws IOException;
 
   long position() throws IOException;
 
@@ -32,6 +33,10 @@ public interface OWALFile extends Closeable {
         OLogManager.instance()
             .errorNoDb(OWALFile.class, "Can not open file using Linux API, Java FileChannel will be used instead", e);
       }
+    } else if (Platform.isLinux()) {
+      final int fd = ONative.instance()
+          .open(path.toAbsolutePath().toString(), ONative.O_WRONLY | ONative.O_CREAT | ONative.O_EXCL | ONative.O_APPEND);
+      return new OWALFdFile(fd, blockSize);
     }
 
     return new OWALChannelFile(

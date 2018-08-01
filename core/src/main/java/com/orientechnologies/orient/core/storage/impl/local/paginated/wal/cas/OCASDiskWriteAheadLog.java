@@ -2081,6 +2081,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
       buffer.position(0);
       buffer.limit(pageSize);
 
+      final long oldFilePosition = currentPosition;
       assert file.position() == currentPosition;
       currentPosition += buffer.limit();
 
@@ -2095,7 +2096,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
         while (buffer.remaining() > 0) {
           final int initialPos = buffer.position();
-          final int written = file.write(buffer);
+          final int written = file.write(buffer, oldFilePosition + initialPos);
           assert buffer.position() == initialPos + written;
         }
 

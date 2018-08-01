@@ -34,7 +34,7 @@ public class OWALChannelFile implements OWALFile {
   }
 
   @Override
-  public int write(ByteBuffer buffer) throws IOException {
+  public int write(ByteBuffer buffer, long expectedInitialLen) throws IOException {
     return channel.write(buffer);
   }
 

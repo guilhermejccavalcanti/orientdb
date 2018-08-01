@@ -59,6 +59,8 @@ public class ONative {
   public static final int SEEK_CUR = 1;
   public static final int SEEK_END = 2;
 
+  public static final int POSIX_FADV_DONTNEED = 4;
+
   private static volatile OCLibrary C_LIBRARY;
   private static final    String    DEFAULT_MEMORY_CGROUP_PATH = "/sys/fs/memory";
 
@@ -248,6 +250,10 @@ public class ONative {
 
   public long pread(int fd, ByteBuffer buffer, int count, long position) throws LastErrorException {
     return C_LIBRARY.pread64(fd, buffer, count, position);
+  }
+
+  public long sys_fadvise64_64(int fd, long offset, long len, int advice) throws LastErrorException {
+    return C_LIBRARY.sys_fadvise64_64(fd, offset, len, advice);
   }
 
   public int fsync(int fd) throws IOException {
