@@ -1861,6 +1861,8 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
       OLogSequenceNumber lastLSN = null;
       OLogSequenceNumber checkPointLSN = null;
 
+      boolean recordsWritten = false;
+
       try {
         final long ts = System.nanoTime();
         final long qSize = queueSize.get();
@@ -1993,6 +1995,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
                 }
 
                 lastLSN = lsn;
+                recordsWritten = true;
                 if (writeableRecord.isUpdateMasterRecord()) {
                   checkPointLSN = lastLSN;
                 }
@@ -2016,6 +2019,8 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
               listener.onSegmentOverflow(currentSegment);
             }
           }
+
+          walFile.force(true);
         }
       } catch (final IOException e) {
         OLogManager.instance().errorNoDb(this, "Error during WAL writing", e);
