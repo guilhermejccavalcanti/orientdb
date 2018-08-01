@@ -2131,7 +2131,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
           writtenCheckpoint = checkpointLSN;
         }
 
-        final Iterator<List<CountDownLatch>> iterator = writeTillLatches.tailMap(lastLSN, true).values().iterator();
+        final Iterator<List<CountDownLatch>> iterator = writeTillLatches.headMap(lastLSN, true).values().iterator();
 
         while (iterator.hasNext()) {
           final List<CountDownLatch> latches = iterator.next();
