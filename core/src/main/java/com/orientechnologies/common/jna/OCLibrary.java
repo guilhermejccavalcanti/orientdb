@@ -87,7 +87,7 @@ public interface OCLibrary extends Library {
 
   long write(int fd, ByteBuffer buffer, long count) throws LastErrorException;
 
-  long sys_fadvise64_64(int fd, long offset, long len, int advice) throws LastErrorException;
+  int posix_fadvise(int fd, long offset, long len, int flag) throws LastErrorException;
 
   long read(int fd, ByteBuffer buffer, long count) throws LastErrorException;
 

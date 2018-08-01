@@ -252,8 +252,8 @@ public class ONative {
     return C_LIBRARY.pread64(fd, buffer, count, position);
   }
 
-  public long sys_fadvise64_64(int fd, long offset, long len, int advice) throws LastErrorException {
-    return C_LIBRARY.sys_fadvise64_64(fd, offset, len, advice);
+  public long posix_fadvise(int fd, long offset, long len, int advice) throws LastErrorException {
+    return C_LIBRARY.posix_fadvise(fd, offset, len, advice);
   }
 
   public int fsync(int fd) throws IOException {
