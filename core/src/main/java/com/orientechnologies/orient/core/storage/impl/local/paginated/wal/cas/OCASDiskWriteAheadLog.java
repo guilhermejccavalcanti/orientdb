@@ -1,8 +1,10 @@
 package com.orientechnologies.orient.core.storage.impl.local.paginated.wal.cas;
 
+import com.orientechnologies.common.concur.lock.OInterruptedException;
 import com.orientechnologies.common.concur.lock.ScalableRWLock;
 import com.orientechnologies.common.directmemory.ODirectMemoryAllocator;
 import com.orientechnologies.common.directmemory.OPointer;
+import com.orientechnologies.common.exception.OException;
 import com.orientechnologies.common.io.OIOUtils;
 import com.orientechnologies.common.jna.ONative;
 import com.orientechnologies.common.log.OLogManager;
@@ -158,8 +160,11 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   //not volatile because used only inside of write thread.
   private volatile OLogSequenceNumber              writtenCheckpoint = null;
 
-  private          long lastFSyncTs = -1;
-  private final    int  fsyncInterval;
+  private       long lastFSyncTs = -1;
+  private final int  fsyncInterval;
+
+  private final ConcurrentSkipListMap<OLogSequenceNumber, List<CountDownLatch>> writeTillLatches = new ConcurrentSkipListMap<>();
+
   private volatile long segmentAdditionTs;
 
   private long currentPosition = 0;
@@ -1042,11 +1047,6 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     }
 
     long qsize = queueSize.addAndGet(writeableRecord.getDiskSize());
-
-    if (qsize >= 5 * pageSize && commitExecutor.getQueue().size() < 2) {
-      commitExecutor.submit(new RecordsWriter(false));
-    }
-
     if (qsize >= maxCacheSize) {
       threadsWaitingCount.increment();
       try {
@@ -1115,12 +1115,39 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
           calculateRecordsLSNs();
         }
 
+        recordLSN = record.getLsn();
+
         if (recordLSN.compareTo(lsn) <= 0 && commitExecutor.getQueue().size() < 2) {
           commitExecutor.submit(new RecordsWriter(true));
         }
       }
 
-      Thread.yield();
+      final CountDownLatch latch = new CountDownLatch(1);
+      writeTillLatches.compute(lsn, (lSn, list) -> {
+        if (list == null) {
+          list = new ArrayList<>();
+          list.add(latch);
+
+          return list;
+        }
+
+        list = new ArrayList<>(list);
+        list.add(latch);
+        return list;
+      });
+
+      written = writtenUpTo.get();
+
+      if (written.lsn.compareTo(lsn) >= 0) {
+        return;
+      }
+
+      try {
+        latch.await();
+      } catch (InterruptedException e) {
+        throw OException.wrapException(new OInterruptedException("Wait of WAL flush was interrupted"), e);
+      }
+
       written = writtenUpTo.get();
     }
   }
@@ -1866,7 +1893,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
         final long qSize = queueSize.get();
 
         //even if queue is empty we need to write buffer content to the disk if needed
-        if (qSize >= maxCacheSize || qSize >= 5 * pageSize || fullWrite) {
+        if (qSize >= maxCacheSize || fullWrite) {
           final CountDownLatch fl = new CountDownLatch(1);
           flushLatch.lazySet(fl);
           try {
@@ -2102,6 +2129,17 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
         if (checkpointLSN != null) {
           assert writtenCheckpoint == null || writtenCheckpoint.compareTo(checkpointLSN) < 0;
           writtenCheckpoint = checkpointLSN;
+        }
+
+        final Iterator<List<CountDownLatch>> iterator = writeTillLatches.tailMap(lastLSN, true).values().iterator();
+
+        while (iterator.hasNext()) {
+          final List<CountDownLatch> latches = iterator.next();
+          for (CountDownLatch latch : latches) {
+            latch.countDown();
+          }
+
+          iterator.remove();
         }
 
         if (printPerformanceStatistic) {
