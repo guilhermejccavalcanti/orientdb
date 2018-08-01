@@ -113,6 +113,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   private final ConcurrentSkipListSet<Long>         segments = new ConcurrentSkipListSet<>();
 
   private final OScheduledThreadPoolExecutorWithLogging commitExecutor;
+  private final OScheduledThreadPoolExecutorWithLogging fsyncExecutor;
 
   private final FileStore fileStore;
   private final Path      walLocation;
@@ -133,6 +134,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   private       long                         segmentId   = -1;
 
   private final ScheduledFuture<?> recordsWriterFuture;
+  private final ScheduledFuture<?> fsyncFuture;
 
   private final Path masterRecordPath;
 
@@ -152,9 +154,9 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   private final ConcurrentLinkedQueue<OPair<Long, OWALFile>> fileCloseQueue     = new ConcurrentLinkedQueue<>();
   private final AtomicInteger                                fileCloseQueueSize = new AtomicInteger();
 
-  private final AtomicReference<CountDownLatch> flushLatch        = new AtomicReference<>(new CountDownLatch(0));
+  private final    AtomicReference<CountDownLatch> flushLatch        = new AtomicReference<>(new CountDownLatch(0));
   //not volatile because used only inside of write thread.
-  private       OLogSequenceNumber              writtenCheckpoint = null;
+  private volatile OLogSequenceNumber              writtenCheckpoint = null;
 
   private          long lastFSyncTs = -1;
   private final    int  fsyncInterval;
@@ -182,10 +184,19 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
       long segmentsInterval, final long maxSegmentSize, final int commitDelay, final boolean filterWALFiles, final Locale locale,
       final long walSizeHardLimit, final long freeSpaceLimit, final int fsyncInterval, boolean allowDirectIO, boolean callFsync,
       boolean printPerformanceStatistic, int statisticPrintInterval) throws IOException {
+
     commitExecutor = new OScheduledThreadPoolExecutorWithLogging(1, r -> {
       final Thread thread = new Thread(OStorageAbstract.storageThreadGroup, r);
       thread.setDaemon(true);
       thread.setName("OrientDB WAL Flush Task (" + storageName + ")");
+      thread.setUncaughtExceptionHandler(new OUncaughtExceptionHandler());
+      return thread;
+    });
+
+    fsyncExecutor = new OScheduledThreadPoolExecutorWithLogging(1, r -> {
+      final Thread thread = new Thread(OStorageAbstract.storageThreadGroup, r);
+      thread.setDaemon(true);
+      thread.setName("OrientDB WAL fsycn Task (" + storageName + ")");
       thread.setUncaughtExceptionHandler(new OUncaughtExceptionHandler());
       return thread;
     });
@@ -273,7 +284,10 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     log(new OEmptyWALRecord());
 
     this.recordsWriterFuture = commitExecutor
-        .scheduleAtFixedRate(new RecordsWriter(false, false), commitDelay, commitDelay, TimeUnit.MILLISECONDS);
+        .scheduleWithFixedDelay(new RecordsWriter(false), commitDelay, commitDelay, TimeUnit.MILLISECONDS);
+
+    fsyncFuture = this.fsyncExecutor
+        .scheduleWithFixedDelay(new ForceSyncTask(), fsyncInterval, fsyncInterval, TimeUnit.MILLISECONDS);
 
     flush();
   }
@@ -1029,8 +1043,8 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
     long qsize = queueSize.addAndGet(writeableRecord.getDiskSize());
 
-    if (qsize >= 5 * pageSize && commitExecutor.getTaskCount() < 2) {
-      commitExecutor.submit(new RecordsWriter(false, false));
+    if (qsize >= 5 * pageSize && commitExecutor.getQueue().size() < 2) {
+      commitExecutor.submit(new RecordsWriter(false));
     }
 
     if (qsize >= maxCacheSize) {
@@ -1101,8 +1115,8 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
           calculateRecordsLSNs();
         }
 
-        if (recordLSN.compareTo(lsn) <= 0 && commitExecutor.getTaskCount() < 2) {
-          commitExecutor.submit(new RecordsWriter(false, true));
+        if (recordLSN.compareTo(lsn) <= 0 && commitExecutor.getQueue().size() < 2) {
+          commitExecutor.submit(new RecordsWriter(true));
         }
       }
 
@@ -1372,6 +1386,17 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
       OLogManager.instance().errorNoDb(this, "Cannot shutdown background WAL commit thread", e);
     }
 
+    fsyncExecutor.shutdown();
+
+    try {
+      if (!fsyncExecutor.awaitTermination(OGlobalConfiguration.WAL_SHUTDOWN_TIMEOUT.getValueAsInteger(), TimeUnit.MILLISECONDS)) {
+        throw new OStorageException("WAL fsync task for '" + storageName + "' storage cannot be stopped");
+      }
+
+    } catch (final InterruptedException e) {
+      OLogManager.instance().errorNoDb(this, "Cannot shutdown background WAL fsync thread", e);
+    }
+
     OWALRecord record = records.poll();
     while (record != null) {
       if (record instanceof OWriteableWALRecord) {
@@ -1411,6 +1436,18 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
         OLogManager.instance().errorNoDb(this, "Cannot shutdown background WAL commit thread", e);
       } catch (final ExecutionException e) {
         throw new OStorageException("WAL flush task for '" + storageName + "' storage cannot be stopped");
+      }
+    }
+
+    if (fsyncFuture.isDone()) {
+      try {
+        fsyncFuture.get();
+      } catch (final CancellationException e) {
+        //ignore
+      } catch (final InterruptedException e) {
+        OLogManager.instance().errorNoDb(this, "Cannot shutdown background WAL fsync thread", e);
+      } catch (final ExecutionException e) {
+        throw new OStorageException("WAL fsync task for '" + storageName + "' storage cannot be stopped");
       }
     }
   }
@@ -1472,12 +1509,22 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   }
 
   private void doFlush(final boolean forceSync) {
-    final Future<?> future = commitExecutor.submit(new RecordsWriter(forceSync, true));
+    Future<?> future = commitExecutor.submit(new RecordsWriter(true));
     try {
       future.get();
     } catch (final Exception e) {
       OLogManager.instance().errorNoDb(this, "Exception during WAL flush", e);
       throw new IllegalStateException(e);
+    }
+
+    if (forceSync) {
+      future = fsyncExecutor.submit(new ForceSyncTask());
+      try {
+        future.get();
+      } catch (final Exception e) {
+        OLogManager.instance().errorNoDb(this, "Exception during WAL flush", e);
+        throw new IllegalStateException(e);
+      }
     }
   }
 
@@ -1722,12 +1769,83 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     return storageName + "." + segment + WAL_SEGMENT_EXTENSION;
   }
 
+  private final class ForceSyncTask implements Runnable {
+    @Override
+    public void run() {
+      try {
+        try {
+          long startTs = 0;
+          if (printPerformanceStatistic) {
+            startTs = System.nanoTime();
+          }
+
+          final int cqSize = fileCloseQueueSize.get();
+          if (cqSize > 0) {
+            int counter = 0;
+
+            while (counter < cqSize) {
+              final OPair<Long, OWALFile> pair = fileCloseQueue.poll();
+              if (pair != null) {
+                @SuppressWarnings("resource")
+                final OWALFile file = pair.value;
+
+                assert file.position() % pageSize == 0;
+
+                if (callFsync) {
+                  file.force(true);
+                }
+
+                file.close();
+
+                fileCloseQueueSize.decrementAndGet();
+              } else {
+                break;
+              }
+
+              counter++;
+            }
+          }
+
+          if (callFsync) {
+            walFile.force(true);
+          }
+
+          final OLogSequenceNumber checkPoint = writtenCheckpoint;
+          if (checkPoint != null) {
+            updateCheckpoint(checkPoint);
+          }
+
+          final WrittenUpTo written = writtenUpTo.get();
+          if (written != null) {
+            flushedLSN = written.lsn;
+          }
+
+          fireEventsFor(flushedLSN);
+
+          if (printPerformanceStatistic) {
+            final long endTs = System.nanoTime();
+            //noinspection NonAtomicOperationOnVolatileField
+            fsyncTime += (endTs - startTs);
+            //noinspection NonAtomicOperationOnVolatileField
+            fsyncCount++;
+          }
+        } catch (final IOException e) {
+          OLogManager.instance().errorNoDb(this, "Error during FSync of WAL data", e);
+          throw e;
+        }
+
+        checkFreeSpace();
+      } catch (final IOException e) {
+        OLogManager.instance().errorNoDb(this, "Error during WAL fsync", e);
+        throw new IllegalStateException(e);
+      }
+    }
+  }
+
   private final class RecordsWriter implements Runnable {
-    private final boolean forceSync;
     private final boolean fullWrite;
 
-    private RecordsWriter(final boolean forceSync, final boolean fullWrite) {
-      this.forceSync = forceSync;
+    private RecordsWriter(final boolean fullWrite) {
       this.fullWrite = fullWrite;
     }
 
@@ -1745,11 +1863,10 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
       try {
         final long ts = System.nanoTime();
-        final boolean makeFSync = forceSync || ts - lastFSyncTs > fsyncInterval * 1_000_000;
         final long qSize = queueSize.get();
 
         //even if queue is empty we need to write buffer content to the disk if needed
-        if (qSize >= maxCacheSize || qSize >= 5 * pageSize || fullWrite || makeFSync) {
+        if (qSize >= maxCacheSize || qSize >= 5 * pageSize || fullWrite) {
           final CountDownLatch fl = new CountDownLatch(1);
           flushLatch.lazySet(fl);
           try {
@@ -1898,70 +2015,6 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
             for (final OSegmentOverflowListener listener : segmentOverflowListeners) {
               listener.onSegmentOverflow(currentSegment);
             }
-          }
-        }
-
-        if (makeFSync) {
-          try {
-            assert walFile.position() == currentPosition;
-
-            try {
-              long startTs = 0;
-              if (printPerformanceStatistic) {
-                startTs = System.nanoTime();
-              }
-
-              final int cqSize = fileCloseQueueSize.get();
-              if (cqSize > 0) {
-                int counter = 0;
-
-                while (counter < cqSize) {
-                  final OPair<Long, OWALFile> pair = fileCloseQueue.poll();
-                  if (pair != null) {
-                    @SuppressWarnings("resource")
-                    final OWALFile file = pair.value;
-
-                    assert file.position() % pageSize == 0;
-
-                    if (callFsync) {
-                      file.force(true);
-                    }
-
-                    file.close();
-
-                    fileCloseQueueSize.decrementAndGet();
-                  } else {
-                    break;
-                  }
-
-                  counter++;
-                }
-              }
-
-              if (callFsync) {
-                walFile.force(true);
-              }
-
-              updateCheckpoint(writtenCheckpoint);
-              flushedLSN = writtenUpTo.get().lsn;
-
-              fireEventsFor(flushedLSN);
-
-              if (printPerformanceStatistic) {
-                final long endTs = System.nanoTime();
-                //noinspection NonAtomicOperationOnVolatileField
-                fsyncTime += (endTs - startTs);
-                //noinspection NonAtomicOperationOnVolatileField
-                fsyncCount++;
-              }
-            } catch (final IOException e) {
-              OLogManager.instance().errorNoDb(this, "Error during FSync of WAL data", e);
-              throw e;
-            }
-
-            checkFreeSpace();
-          } finally {
-            lastFSyncTs = ts;
           }
         }
       } catch (final IOException e) {
