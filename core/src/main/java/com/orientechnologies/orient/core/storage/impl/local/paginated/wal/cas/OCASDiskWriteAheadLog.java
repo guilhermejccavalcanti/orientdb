@@ -1107,7 +1107,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     }
 
     while (written.lsn.compareTo(lsn) < 0) {
-      commitExecutor.submit(new RecordsWriter(true, null));
+      commitExecutor.submit(new RecordsWriter(true, lsn));
 
       final CountDownLatch latch = new CountDownLatch(1);
       writeTillLatches.compute(lsn, (lSn, list) -> {
@@ -1902,7 +1902,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
         final long qSize = queueSize.get();
 
         //even if queue is empty we need to write buffer content to the disk if needed
-        if (qSize >= maxCacheSize || fullWrite || qSize >= 10 * pageSize) {
+        if (qSize >= maxCacheSize || fullWrite || qSize >= 10 * pageSize || writeTill != null) {
           final CountDownLatch fl = new CountDownLatch(1);
           flushLatch.lazySet(fl);
           try {
