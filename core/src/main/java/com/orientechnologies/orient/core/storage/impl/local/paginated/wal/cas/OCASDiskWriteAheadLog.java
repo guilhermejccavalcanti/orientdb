@@ -285,7 +285,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     log(new OEmptyWALRecord());
 
     this.recordsWriterFuture = commitExecutor
-        .scheduleWithFixedDelay(new RecordsWriter(false), commitDelay, commitDelay, TimeUnit.MILLISECONDS);
+        .scheduleWithFixedDelay(new RecordsWriter(false, null), commitDelay, commitDelay, TimeUnit.MILLISECONDS);
 
     fsyncFuture = this.fsyncExecutor
         .scheduleWithFixedDelay(new ForceSyncTask(), fsyncInterval, fsyncInterval, TimeUnit.MILLISECONDS);
@@ -1043,6 +1043,11 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     }
 
     long qsize = queueSize.addAndGet(writeableRecord.getDiskSize());
+
+    if (qsize >= 10 * pageSize && commitExecutor.getQueue().size() < 2) {
+      commitExecutor.submit(new RecordsWriter(false, null));
+    }
+
     if (qsize >= maxCacheSize) {
       threadsWaitingCount.increment();
       try {
@@ -1102,21 +1107,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     }
 
     while (written.lsn.compareTo(lsn) < 0) {
-      final OWALRecord record = records.peek();
-
-      if (record != null) {
-        OLogSequenceNumber recordLSN = record.getLsn();
-
-        if (recordLSN.getPosition() == -1) {
-          calculateRecordsLSNs();
-        }
-
-        recordLSN = record.getLsn();
-
-        if (recordLSN.compareTo(lsn) <= 0 && commitExecutor.getQueue().size() < 2) {
-          commitExecutor.submit(new RecordsWriter(true));
-        }
-      }
+      commitExecutor.submit(new RecordsWriter(true, null));
 
       final CountDownLatch latch = new CountDownLatch(1);
       writeTillLatches.compute(lsn, (lSn, list) -> {
@@ -1532,7 +1523,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   }
 
   private void doFlush(final boolean forceSync) {
-    Future<?> future = commitExecutor.submit(new RecordsWriter(true));
+    Future<?> future = commitExecutor.submit(new RecordsWriter(true, null));
     try {
       future.get();
     } catch (final Exception e) {
@@ -1872,10 +1863,12 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   }
 
   private final class RecordsWriter implements Runnable {
-    private final boolean fullWrite;
+    private final boolean            fullWrite;
+    private final OLogSequenceNumber writeTill;
 
-    private RecordsWriter(final boolean fullWrite) {
+    private RecordsWriter(final boolean fullWrite, OLogSequenceNumber writeTill) {
       this.fullWrite = fullWrite;
+      this.writeTill = writeTill;
     }
 
     @Override
@@ -1890,12 +1883,26 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
       OLogSequenceNumber lastLSN = null;
       OLogSequenceNumber checkPointLSN = null;
 
+      if (writeTill != null) {
+        final OWALRecord firstRecord = records.peek();
+        OLogSequenceNumber firstRecordLSN = firstRecord.getLsn();
+        if (firstRecordLSN.getPosition() == -1) {
+          calculateRecordsLSNs();
+
+          firstRecordLSN = firstRecord.getLsn();
+
+          if (firstRecordLSN.compareTo(writeTill) > 0) {
+            return;
+          }
+        }
+      }
+
       try {
         final long ts = System.nanoTime();
         final long qSize = queueSize.get();
 
         //even if queue is empty we need to write buffer content to the disk if needed
-        if (qSize >= maxCacheSize || fullWrite) {
+        if (qSize >= maxCacheSize || fullWrite || qSize >= 10 * pageSize) {
           final CountDownLatch fl = new CountDownLatch(1);
           flushLatch.lazySet(fl);
           try {
