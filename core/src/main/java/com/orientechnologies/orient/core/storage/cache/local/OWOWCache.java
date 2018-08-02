@@ -2720,19 +2720,19 @@ public final class OWOWCache extends OAbstractWriteCache implements OWriteCache,
 
               final long avgFlushInterval = lsnPagesFlushIntervalSum / lsnPagesFlushIntervalCount;
 
-              if (segments <= 2 * 81_920) {
+              if (segments <= 2 * 327_680) {
                 lsnFlushIntervalBoundary = 8 * avgFlushInterval;
-              } else if (segments <= 3 * 81_920) {
+              } else if (segments <= 3 * 327_680) {
                 lsnFlushIntervalBoundary = 4 * avgFlushInterval;
-              } else if (segments <= 4 * 81_920) {
+              } else if (segments <= 4 * 327_680) {
                 lsnFlushIntervalBoundary = 2 * avgFlushInterval;
-              } else if (segments <= 5 * 81_920) {
+              } else if (segments <= 5 * 327_680) {
                 lsnFlushIntervalBoundary = avgFlushInterval;
-              } else if (segments <= 6 * 81_920) {
+              } else if (segments <= 6 * 327_680) {
                 lsnFlushIntervalBoundary = avgFlushInterval / 2;
-              } else if (segments <= 7 * 81_920) {
+              } else if (segments <= 7 * 327_680) {
                 lsnFlushIntervalBoundary = avgFlushInterval / 4;
-              } else if (segments <= 8 * 81_920) {
+              } else if (segments <= 8 * 327_680) {
                 lsnFlushIntervalBoundary = avgFlushInterval / 8;
               } else {
                 lsnFlushIntervalBoundary = 0;
