@@ -1806,7 +1806,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
                 assert file.position() % pageSize == 0;
 
                 final long position = file.position();
-                file.clearOSPageCache(Math.max(0, position - 128 * 1024 * 1024), position);
+                file.clearOSPageCache(Math.max(0, position - 64 * 1024 * 1024), position);
 
                 if (callFsync) {
                   file.force(true);
@@ -1824,7 +1824,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
           }
 
           final long position = walFile.position();
-          walFile.clearOSPageCache(Math.max(0, position - 128 * 1024 * 1024), position);
+          walFile.clearOSPageCache(Math.max(0, position - 64 * 1024 * 1024), position);
 
           if (callFsync) {
             walFile.force(true);
@@ -2162,7 +2162,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
           bytesWrittenTime += (endTs - startTs);
         }
 
-        final long flushChunkSize = 128 * 1024 * 1024;
+        final long flushChunkSize = 64 * 1024 * 1024;
         if (currentPosition > 0 && currentPosition - oldFilePosition >= flushChunkSize) {
           final long flushChunkStartIndex = oldFilePosition / flushChunkSize;
           final long flushChunkEndIndex = currentPosition / flushChunkSize;
