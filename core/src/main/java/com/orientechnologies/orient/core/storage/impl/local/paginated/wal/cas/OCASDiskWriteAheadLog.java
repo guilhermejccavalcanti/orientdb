@@ -1045,7 +1045,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     long qsize = queueSize.addAndGet(writeableRecord.getDiskSize());
 
     if (qsize >= 10 * pageSize && commitExecutor.getQueue().size() < 2) {
-      commitExecutor.submit(new RecordsWriter(true));
+      commitExecutor.submit(new RecordsWriter(false));
     }
 
     if (qsize >= maxCacheSize) {
