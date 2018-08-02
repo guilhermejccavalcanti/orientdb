@@ -1107,7 +1107,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     }
 
     while (written.lsn.compareTo(lsn) < 0) {
-      commitExecutor.submit(new RecordsWriter(true, lsn));
+      commitExecutor.submit(new RecordsWriter(false, lsn));
 
       final CountDownLatch latch = new CountDownLatch(1);
       writeTillLatches.compute(lsn, (lSn, list) -> {
