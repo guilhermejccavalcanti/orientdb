@@ -264,6 +264,14 @@ public class ONative {
     }
   }
 
+  public int fdatasync(int fd) throws IOException {
+    try {
+      return C_LIBRARY.fdatasync(fd);
+    } catch (LastErrorException e) {
+      throw new IOException("Can not fsync file", e);
+    }
+  }
+
   public long lseek(int fd, long offset, int whence) throws LastErrorException {
     return C_LIBRARY.lseek(fd, offset, whence);
   }

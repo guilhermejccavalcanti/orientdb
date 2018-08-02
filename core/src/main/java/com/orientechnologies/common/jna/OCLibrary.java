@@ -97,6 +97,8 @@ public interface OCLibrary extends Library {
 
   int fsync(int fd) throws LastErrorException;
 
+  int fdatasync(int fd) throws LastErrorException;
+
   long readv(int fd, iovec[] buffers, int iovecCount) throws LastErrorException;
 
   long writev(int fd, iovec[] buffers, int iovecCount) throws LastErrorException;
