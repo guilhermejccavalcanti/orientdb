@@ -1920,7 +1920,6 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
             }
 
             walFile.clearOSPageCache(oldPosition, currentPosition - oldPosition);
-            walFile.close();
 
             if (printPerformanceStatistic) {
               final long endTs = System.nanoTime();
