@@ -1786,6 +1786,14 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
                     assert walFile.position() == currentPosition;
 
+                    long startTs = 0;
+
+                    if (printPerformanceStatistic) {
+                      startTs = System.nanoTime();
+                      //noinspection NonAtomicOperationOnVolatileField
+                      fsyncCount++;
+                    }
+
                     if (callFsync) {
                       walFile.force(true);
                     }
@@ -1795,6 +1803,11 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
                     updateFSyncInfo();
 
+                    if (printPerformanceStatistic) {
+                      final long endTs = System.nanoTime();
+                      //noinspection NonAtomicOperationOnVolatileField
+                      fsyncTime += endTs - startTs;
+                    }
                   }
 
                   segmentId = lsn.getSegment();
@@ -1894,12 +1907,26 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
               writeBuffer(walFile, writeBuffer, writeBufferPointer, lastLSN, checkPointLSN, segmentId);
             }
 
+            long startTs = 0;
+
+            if (printPerformanceStatistic) {
+              startTs = System.nanoTime();
+              //noinspection NonAtomicOperationOnVolatileField
+              fsyncCount++;
+            }
+
             if (callFsync) {
               walFile.force(true);
             }
 
             walFile.clearOSPageCache(oldPosition, currentPosition - oldPosition);
             walFile.close();
+
+            if (printPerformanceStatistic) {
+              final long endTs = System.nanoTime();
+              //noinspection NonAtomicOperationOnVolatileField
+              fsyncTime += endTs - startTs;
+            }
 
             updateFSyncInfo();
           } finally {
