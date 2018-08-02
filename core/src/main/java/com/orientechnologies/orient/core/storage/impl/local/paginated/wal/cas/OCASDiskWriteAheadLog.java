@@ -160,9 +160,6 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
   //not volatile because used only inside of write thread.
   private volatile OLogSequenceNumber              writtenCheckpoint = null;
 
-  private       long lastFSyncTs = -1;
-  private final int  fsyncInterval;
-
   private final ConcurrentSkipListMap<OLogSequenceNumber, List<CountDownLatch>> writeTillLatches = new ConcurrentSkipListMap<>();
 
   private volatile long segmentAdditionTs;
@@ -212,7 +209,6 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
     this.statisticPrintInterval = statisticPrintInterval;
     commitExecutor.setMaximumPoolSize(1);
 
-    this.fsyncInterval = fsyncInterval;
     this.walSizeHardLimit = walSizeHardLimit;
     this.freeSpaceLimit = freeSpaceLimit;
 
@@ -1818,6 +1814,9 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
                 assert file.position() % pageSize == 0;
 
+                final long position = file.position();
+                file.clearOSPageCache(Math.max(0, position - 128 * 1024 * 1024), position);
+
                 if (callFsync) {
                   file.force(true);
                 }
@@ -1832,6 +1831,9 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
               counter++;
             }
           }
+
+          final long position = walFile.position();
+          walFile.clearOSPageCache(Math.max(0, position - 128 * 1024 * 1024), position);
 
           if (callFsync) {
             walFile.force(true);
@@ -2082,6 +2084,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
       buffer.limit(pageSize);
 
       final long oldFilePosition = currentPosition;
+
       assert file.position() == currentPosition;
       currentPosition += buffer.limit();
 
@@ -2096,7 +2099,7 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
 
         while (buffer.remaining() > 0) {
           final int initialPos = buffer.position();
-          final int written = file.write(buffer, oldFilePosition + initialPos);
+          final int written = file.write(buffer);
           assert buffer.position() == initialPos + written;
         }
 
@@ -2151,9 +2154,24 @@ public final class OCASDiskWriteAheadLog implements OWriteAheadLog {
           //noinspection NonAtomicOperationOnVolatileField
           bytesWrittenTime += (endTs - startTs);
         }
-      } catch (final IOException e)
 
-      {
+        final long flushChunkSize = 128 * 1024 * 1024;
+        if (currentPosition > 0 && currentPosition - oldFilePosition >= flushChunkSize) {
+          final long flushChunkStartIndex = oldFilePosition / flushChunkSize;
+          final long flushChunkEndIndex = currentPosition / flushChunkSize;
+
+          fsyncExecutor.submit(() -> {
+            if (walFile.isOpen()) {
+              try {
+                walFile.clearOSPageCache(flushChunkStartIndex * flushChunkSize,
+                    (flushChunkEndIndex - flushChunkStartIndex) * flushChunkSize);
+              } catch (IOException e) {
+                OLogManager.instance().errorNoDb(this, "Error during flush of OS cache", e);
+              }
+            }
+          });
+        }
+      } catch (final IOException e) {
         OLogManager.instance().errorNoDb(this, "Error during WAL data write", e);
         throw e;
       } finally

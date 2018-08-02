@@ -15,13 +15,17 @@ import java.nio.file.StandardOpenOption;
 public interface OWALFile extends Closeable {
   void force(boolean forceMetadata) throws IOException;
 
-  int write(ByteBuffer buffer, long expectedInitialLen) throws IOException;
+  int write(ByteBuffer buffer) throws IOException;
+
+  void clearOSPageCache(long offset, long len) throws IOException;
 
   long position() throws IOException;
 
   void position(long position) throws IOException;
 
   void readBuffer(ByteBuffer buffer) throws IOException;
+
+  boolean isOpen();
 
   static OWALFile createWriteWALFile(Path path, boolean allowDirectIO, int blockSize) throws IOException {
     if (allowDirectIO) {
